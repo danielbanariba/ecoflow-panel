@@ -50,6 +50,9 @@ ecoflow-power-watch --status    # red: presente  115.2 V  entrada 244 W  bateria
 
 ![architecture](docs/architecture.png)
 
+*The source is `docs/architecture.excalidraw` — open it at
+[excalidraw.com](https://excalidraw.com) to edit.*
+
 Every desktop frontend runs the same client and reads the same JSON line. The
 credentials, the HMAC signing, the cache and the field selection live in one
 Python file that you can run from a shell — so a frontend is a hundred lines of
