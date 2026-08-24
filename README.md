@@ -36,7 +36,7 @@ device serial by itself.
 | | |
 |---|---|
 | `ecoflow-battery` | charge, from the cloud API. `--json` gives all 242 fields |
-| `ecoflow-power-watch` | notices the grid dropping and pushes to your phone |
+| `ecoflow-power-watch` | notices the grid dropping, pushes to your phone, keeps a log |
 | KDE / GNOME / waybar | a panel item that reads the same one-line JSON |
 
 ```bash
@@ -44,6 +44,7 @@ ecoflow-battery                 # 97%
 ecoflow-battery --panel         # {"soc":97,"state":"idle","watts":0,"minutes":null}
 ecoflow-battery --json          # everything the unit reports
 ecoflow-power-watch --status    # red: presente  115.2 V  entrada 244 W  bateria 97%
+ecoflow-power-watch --log       # every outage so far, and the total time without mains
 ```
 
 ## How it works
@@ -88,6 +89,11 @@ device that accepts a TCP connection on port 80 and then returns an empty reply
 reach EcoFlow's cloud outbound. **Being on the same network buys nothing**: the
 reading goes out to the internet and comes back, even with the unit in the same
 room.
+
+Every transition is appended to `~/.local/share/ecoflow/outages.log` —
+timestamp, event, charge, and how long the outage lasted — so the alerts leave a
+history behind rather than just a notification you swipe away. It lives under
+`share/`, not `cache/`, because a cache is something you are allowed to delete.
 
 Which has a consequence worth planning around: if mains power drops, the alert
 is sent **by your machine**. The PC and the router both have to be running off

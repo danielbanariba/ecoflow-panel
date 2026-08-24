@@ -12,11 +12,14 @@ happens to find.
 
   --dry-run   evaluate and report, send nothing
   --status    print the current reading and exit
+  --log       print the outage history and the total time without mains
 """
 import json, os, subprocess, sys, urllib.request
 from datetime import datetime
 
 STATE = os.path.expanduser("~/.cache/ecoflow-power-watch.json")
+# The cache can be wiped; the log is history, so it lives in share/ not cache/.
+LOG = os.path.expanduser("~/.local/share/ecoflow/outages.log")
 HELPER = os.path.expanduser("~/.local/bin/ecoflow-battery")
 NTFY_HOST = "https://ntfy.sh"
 # Below this the wall is considered dead. Real brownouts sit far above it, and
@@ -65,14 +68,69 @@ def push(title, body, topic, tags, priority):
                     "-u", "critical", title, body], check=False)
 
 
+def log_event(kind, soc, minutes=None):
+    """Append one line per transition. Tab-separated so it stays greppable and
+    still opens cleanly in a spreadsheet."""
+    try:
+        os.makedirs(os.path.dirname(LOG), exist_ok=True)
+        stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        dur = "" if minutes is None else str(minutes)
+        with open(LOG, "a") as fh:
+            fh.write(f"{stamp}\t{kind}\t{soc}\t{dur}\n")
+    except OSError:
+        pass
+
+
 def human(mins):
     if mins <= 0:
         return ""
     return f"{mins // 60} h {mins % 60} min" if mins >= 60 else f"{mins} min"
 
 
+def outage_minutes(now):
+    """Minutes since the last logged outage, or None if there is no open one."""
+    try:
+        with open(LOG) as fh:
+            lines = [l.rstrip("\n") for l in fh if l.strip()]
+    except OSError:
+        return None
+    for line in reversed(lines):
+        parts = line.split("\t")
+        if len(parts) >= 2 and parts[1] == "corte":
+            try:
+                started = datetime.strptime(parts[0], "%Y-%m-%d %H:%M:%S")
+                return max(0, int((now - started).total_seconds() // 60))
+            except ValueError:
+                return None
+        if len(parts) >= 2 and parts[1] == "retorno":
+            return None            # the previous outage already closed
+    return None
+
+
+def show_log():
+    try:
+        with open(LOG) as fh:
+            lines = [l.rstrip("\n") for l in fh if l.strip()]
+    except OSError:
+        print("sin registro todavía")
+        return 0
+    total = 0
+    print(f"  {'fecha y hora':<21} {'evento':<8} {'batería':>7}  duración")
+    for line in lines:
+        p = (line.split("\t") + ["", "", "", ""])[:4]
+        dur = f"{human(int(p[3]))}" if p[3].isdigit() else ""
+        if p[3].isdigit():
+            total += int(p[3])
+        print(f"  {p[0]:<21} {p[1]:<8} {p[2]+'%':>7}  {dur}")
+    cortes = sum(1 for l in lines if "\tcorte\t" in l)
+    print(f"\n  {cortes} corte(s), {human(total) or '0 min'} sin red en total")
+    return 0
+
+
 def main():
     args = sys.argv[1:]
+    if "--log" in args:
+        return show_log()
     r = reading()
     if not r:
         print("no reading", file=sys.stderr)
@@ -93,18 +151,27 @@ def main():
 
     topic = ntfy_topic()
     if prev is not None and prev != live:
-        stamp = datetime.now().strftime("%H:%M")
+        now = datetime.now()
+        stamp = now.strftime("%H:%M")
         if not live:
             title = "Se fue la luz"
-            body = (f"La EcoFlow está alimentando la casa desde las {stamp}.\n"
-                    f"Batería {r['soc']}%")
+            body = f"{stamp} · batería {r['soc']}%"
             if r["dsg_min"] > 0:
-                body += f", autonomía {human(r['dsg_min'])}"
+                body += f" · autonomía {human(r['dsg_min'])}"
             tags, prio = "electric_plug,warning", "urgent"
+            if "--dry-run" not in args:
+                log_event("corte", r["soc"])
         else:
             title = "Volvió la luz"
-            body = f"Red restablecida a las {stamp}. Batería {r['soc']}%."
+            body = f"{stamp} · batería {r['soc']}%"
+            # How long it lasted is the number worth keeping, and it can only be
+            # worked out here, against the timestamp the outage was logged with.
+            mins = outage_minutes(now)
+            if mins is not None:
+                body += f" · duró {human(mins)}"
             tags, prio = "electric_plug,white_check_mark", "default"
+            if "--dry-run" not in args:
+                log_event("retorno", r["soc"], mins)
 
         if "--dry-run" in args:
             print(f"WOULD SEND -> {title}: {body}")
