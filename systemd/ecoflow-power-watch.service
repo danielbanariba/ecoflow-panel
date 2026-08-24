@@ -1,0 +1,8 @@
+[Unit]
+Description=Alert when mains power drops and the EcoFlow takes over
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/ecoflow-power-watch
+TimeoutStartSec=60

@@ -1,0 +1,14 @@
+{
+    "KPlugin": {
+        "Id": "local.ecoflow",
+        "Name": "EcoFlow Battery",
+        "Description": "State of charge of an EcoFlow power station, from the IoT Developer API",
+        "Icon": "battery",
+        "Version": "1.0",
+        "License": "MIT",
+        "Authors": [{ "Name": "Daniel Banariba", "Email": "banaribad@gmail.com" }],
+        "Category": "System Information"
+    },
+    "KPackageStructure": "Plasma/Applet",
+    "X-Plasma-API-Minimum-Version": "6.0"
+}

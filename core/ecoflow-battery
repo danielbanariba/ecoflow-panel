@@ -1,0 +1,189 @@
+#!/usr/bin/env python3
+"""Read the battery percentage of an EcoFlow device from the IoT Developer API.
+
+The device has no local endpoint: its WiFi only reaches EcoFlow's cloud, so a
+scan of the LAN finds nothing to query. Everything goes through api.ecoflow.com.
+
+Signing, per EcoFlow's docs:
+  1. flatten and sort the request params by ASCII
+  2. append accessKey, nonce and timestamp in that order
+  3. HMAC-SHA256 the resulting string with the secret key, hex digest
+  4. send accessKey / nonce / timestamp / sign as headers
+
+  --discover   list the devices on the account and store the first serial
+  --json       full quota payload
+  --field K    print one quota key
+"""
+import hashlib, hmac, json, os, random, sys, time, urllib.request, urllib.error
+
+CONF = os.path.expanduser("~/.config/ecoflow/credentials")
+BASE = "https://api.ecoflow.com"
+CACHE = os.path.expanduser("~/.cache/ecoflow-battery.json")
+MIN_INTERVAL = 60           # seconds between real requests
+
+
+def conf():
+    d = {}
+    try:
+        with open(CONF) as fh:
+            for line in fh:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                d[k.strip()] = v.strip()
+    except OSError:
+        pass
+    return d
+
+
+def save_sn(sn):
+    try:
+        with open(CONF) as fh:
+            lines = fh.readlines()
+        with open(CONF, "w") as fh:
+            for line in lines:
+                fh.write(f"DEVICE_SN={sn}\n" if line.startswith("DEVICE_SN=") else line)
+    except OSError:
+        pass
+
+
+def flatten(obj, prefix=""):
+    """EcoFlow signs nested params in dot/bracket form: params.quotas[0]=x."""
+    out = {}
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            out.update(flatten(v, f"{prefix}.{k}" if prefix else k))
+    elif isinstance(obj, list):
+        for i, v in enumerate(obj):
+            out.update(flatten(v, f"{prefix}[{i}]"))
+    else:
+        out[prefix] = obj
+    return out
+
+
+def call(path, params=None, method="GET"):
+    c = conf()
+    ak, sk = c.get("ACCESS_KEY"), c.get("SECRET_KEY")
+    if not ak or not sk:
+        raise SystemExit("missing ACCESS_KEY / SECRET_KEY in " + CONF)
+
+    nonce = str(random.randint(100000, 999999))
+    ts = str(int(time.time() * 1000))
+    flat = flatten(params or {})
+    qs = "&".join(f"{k}={flat[k]}" for k in sorted(flat))
+
+    # The docs say query params join the signed string. They do not, at least on
+    # /device/quota/all: signing "sn=... &accessKey=..." is rejected as
+    # "signature is wrong", while signing only the three credentials and passing
+    # sn in the URL returns the full payload. Verified against the live API, so
+    # GET signs the credentials alone and POST keeps params in the body.
+    plain = f"accessKey={ak}&nonce={nonce}&timestamp={ts}"
+    if method == "POST" and qs:
+        plain = qs + "&" + plain
+    sign = hmac.new(sk.encode(), plain.encode(), hashlib.sha256).hexdigest()
+
+    url = BASE + path
+    body = None
+    if method == "GET" and qs:
+        url += "?" + qs
+    elif method == "POST":
+        body = json.dumps(params or {}).encode()
+
+    req = urllib.request.Request(url, data=body, method=method, headers={
+        "accessKey": ak, "nonce": nonce, "timestamp": ts,
+        "sign": sign, "Content-Type": "application/json",
+    })
+    with urllib.request.urlopen(req, timeout=15) as r:
+        return json.load(r)
+
+
+def pick_soc(data):
+    """ems.lcdShowSoc is what the unit prints on its own screen, so prefer it
+    over the raw BMS figures, which drift a percent or two from the display."""
+    for key in ("ems.lcdShowSoc", "bmsMaster.soc", "bms_bmsStatus.soc", "pd.soc", "soc"):
+        v = data.get(key)
+        if isinstance(v, (int, float)):
+            return round(float(v))
+    cand = [k for k in data if k.lower().endswith("soc")]
+    return round(float(data[cand[0]])) if cand else None
+
+
+def main():
+    args = sys.argv[1:]
+    c = conf()
+
+    if "--discover" in args:
+        res = call("/iot-open/sign/device/list")
+        devices = (res.get("data") or [])
+        if not devices:
+            print(f"no devices ({res.get('message')})")
+            return 1
+        for d in devices:
+            print(f"  {d.get('sn')}  online={d.get('online')}  {d.get('deviceName','')}")
+        save_sn(devices[0]["sn"])
+        print(f"stored DEVICE_SN={devices[0]['sn']}")
+        return 0
+
+    sn = c.get("DEVICE_SN")
+    if not sn:
+        raise SystemExit("no DEVICE_SN; run with --discover first")
+
+    # The endpoint tolerates polling but there is no reason to hammer it: the
+    # figure moves slowly and a stale reading beats a rate-limit error.
+    now = time.time()
+    data = None
+    try:
+        with open(CACHE) as fh:
+            cached = json.load(fh)
+        if now - cached.get("at", 0) < MIN_INTERVAL and "--force" not in args:
+            data = cached["data"]
+    except (OSError, ValueError):
+        pass
+
+    if data is None:
+        res = call("/iot-open/sign/device/quota/all", {"sn": sn})
+        if res.get("code") not in ("0", 0):
+            print(f"api error: {res.get('message')}", file=sys.stderr)
+            return 2
+        data = res.get("data") or {}
+        try:
+            os.makedirs(os.path.dirname(CACHE), exist_ok=True)
+            with open(CACHE, "w") as fh:
+                json.dump({"at": now, "data": data}, fh)
+        except OSError:
+            pass
+
+    if "--json" in args:
+        print(json.dumps(data, indent=2))
+        return 0
+    if "--field" in args:
+        print(data.get(args[args.index("--field") + 1], ""))
+        return 0
+
+    if "--panel" in args:
+        # One line for the widget: percent, charge direction, time remaining.
+        soc = pick_soc(data)
+        inw = float(data.get("bmsMaster.inputWatts") or 0)
+        outw = float(data.get("bmsMaster.outputWatts") or 0)
+        if inw > 0:
+            state, mins = "charging", data.get("ems.chgRemainTime")
+        elif outw > 0:
+            state, mins = "discharging", data.get("ems.dsgRemainTime")
+        else:
+            state, mins = "idle", None
+        print(json.dumps({"soc": soc, "state": state,
+                          "watts": round(inw or outw),
+                          "minutes": int(mins) if mins else None}))
+        return 0
+
+    soc = pick_soc(data)
+    if soc is None:
+        print("no soc field found; run --json to inspect", file=sys.stderr)
+        return 3
+    print(f"{soc}%")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

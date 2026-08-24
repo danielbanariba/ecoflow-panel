@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# Waybar custom module: emits the JSON shape waybar expects.
+#
+# The reading itself comes from ecoflow-battery, the same client every other
+# frontend uses; this only reshapes it.
+set -uo pipefail
+
+raw=$("$HOME/.local/bin/ecoflow-battery" --panel 2>/dev/null) || {
+    printf '{"text":"--","tooltip":"EcoFlow: sin lectura","class":"error"}\n'
+    exit 0
+}
+
+python3 - "$raw" <<'PY'
+import json, sys
+d = json.loads(sys.argv[1])
+soc = d["soc"]
+estado = {"charging": "Cargando", "discharging": "Descargando"}.get(d["state"], "En reposo")
+
+tip = f"EcoFlow {soc}% · {estado}"
+if d.get("watts"):
+    tip += f" {d['watts']} W"
+if d.get("minutes"):
+    m = d["minutes"]
+    tip += f"\n{m//60} h {m%60} min restantes" if m >= 60 else f"\n{m} min restantes"
+
+cls = "critical" if soc <= 15 else "warning" if soc <= 30 else "normal"
+if d["state"] == "charging":
+    cls += " charging"
+
+print(json.dumps({"text": f"{soc}%", "tooltip": tip, "class": cls, "percentage": soc}))
+PY

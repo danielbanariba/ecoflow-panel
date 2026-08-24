@@ -1,0 +1,130 @@
+#!/usr/bin/env python3
+"""Alert when mains power drops and the EcoFlow takes over, and when it returns.
+
+Grid presence is read from inv.acInVol, the AC input voltage in millivolts:
+roughly 115000 while the wall is live, 0 once it is not. inv.inputWatts is
+carried in the message but is not the test — it also reads 0 when the pack is
+simply full and has stopped drawing.
+
+Only transitions are announced, so a sustained outage does not repeat every
+tick, and the first run stays silent rather than announcing whatever state it
+happens to find.
+
+  --dry-run   evaluate and report, send nothing
+  --status    print the current reading and exit
+"""
+import json, os, subprocess, sys, urllib.request
+from datetime import datetime
+
+STATE = os.path.expanduser("~/.cache/ecoflow-power-watch.json")
+HELPER = os.path.expanduser("~/.local/bin/ecoflow-battery")
+NTFY_HOST = "https://ntfy.sh"
+# Below this the wall is considered dead. Real brownouts sit far above it, and
+# a disconnected input reads a clean 0, so the gap is wide on purpose.
+VOLT_FLOOR = 50_000
+
+
+def ntfy_topic():
+    try:
+        out = subprocess.run(
+            ["dconf", "read", "/org/gnome/shell/extensions/brainusage/ntfy-topic"],
+            capture_output=True, text=True, timeout=5).stdout.strip()
+        return out.strip("'") or None
+    except Exception:
+        return None
+
+
+def reading():
+    try:
+        out = subprocess.run([HELPER, "--json", "--force"],
+                             capture_output=True, text=True, timeout=30)
+        if out.returncode != 0:
+            return None
+        d = json.loads(out.stdout)
+        return {
+            "volts": float(d.get("inv.acInVol") or 0) / 1000.0,
+            "in_watts": float(d.get("inv.inputWatts") or 0),
+            "out_watts": float(d.get("inv.outputWatts") or d.get("bmsMaster.outputWatts") or 0),
+            "soc": round(float(d.get("ems.lcdShowSoc") or 0)),
+            "dsg_min": int(d.get("ems.dsgRemainTime") or 0),
+        }
+    except Exception:
+        return None
+
+
+def push(title, body, topic, tags, priority):
+    if topic:
+        try:
+            req = urllib.request.Request(
+                f"{NTFY_HOST}/{topic}", data=body.encode(),
+                headers={"Title": title, "Priority": priority, "Tags": tags})
+            urllib.request.urlopen(req, timeout=10).read()
+        except Exception as e:
+            print(f"ntfy failed: {e}", file=sys.stderr)
+    subprocess.run(["notify-send", "-a", "EcoFlow", "-i", "battery",
+                    "-u", "critical", title, body], check=False)
+
+
+def human(mins):
+    if mins <= 0:
+        return ""
+    return f"{mins // 60} h {mins % 60} min" if mins >= 60 else f"{mins} min"
+
+
+def main():
+    args = sys.argv[1:]
+    r = reading()
+    if not r:
+        print("no reading", file=sys.stderr)
+        return 1
+
+    live = r["volts"] > VOLT_FLOOR / 1000.0
+
+    if "--status" in args:
+        print(f"red: {'presente' if live else 'AUSENTE'}  {r['volts']:.1f} V  "
+              f"entrada {r['in_watts']:.0f} W  bateria {r['soc']}%")
+        return 0
+
+    try:
+        with open(STATE) as fh:
+            prev = json.load(fh).get("live")
+    except (OSError, ValueError):
+        prev = None
+
+    topic = ntfy_topic()
+    if prev is not None and prev != live:
+        stamp = datetime.now().strftime("%H:%M")
+        if not live:
+            title = "Se fue la luz"
+            body = (f"La EcoFlow está alimentando la casa desde las {stamp}.\n"
+                    f"Batería {r['soc']}%")
+            if r["dsg_min"] > 0:
+                body += f", autonomía {human(r['dsg_min'])}"
+            tags, prio = "electric_plug,warning", "urgent"
+        else:
+            title = "Volvió la luz"
+            body = f"Red restablecida a las {stamp}. Batería {r['soc']}%."
+            tags, prio = "electric_plug,white_check_mark", "default"
+
+        if "--dry-run" in args:
+            print(f"WOULD SEND -> {title}: {body}")
+        else:
+            push(title, body, topic, tags, prio)
+        print(f"transicion: {'red -> bateria' if not live else 'bateria -> red'}")
+    else:
+        print(f"sin cambio: red {'presente' if live else 'ausente'} "
+              f"({r['volts']:.1f} V, bateria {r['soc']}%)"
+              + ("" if prev is not None else " [primera corrida, no avisa]"))
+
+    if "--dry-run" not in args:
+        try:
+            os.makedirs(os.path.dirname(STATE), exist_ok=True)
+            with open(STATE, "w") as fh:
+                json.dump({"live": live}, fh)
+        except OSError:
+            pass
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

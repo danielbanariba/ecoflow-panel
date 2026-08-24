@@ -1,0 +1,8 @@
+{
+  "uuid": "ecoflow@banariba.local",
+  "name": "EcoFlow Battery",
+  "description": "State of charge of an EcoFlow power station in the top bar, read through the IoT Developer API.",
+  "shell-version": ["45", "46", "47", "48", "49", "50"],
+  "version": 1,
+  "url": "https://github.com/danielbanariba/ecoflow-panel"
+}

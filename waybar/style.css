@@ -1,0 +1,4 @@
+#custom-ecoflow            { padding: 0 8px; }
+#custom-ecoflow.warning    { color: #e5c07b; }
+#custom-ecoflow.critical   { color: #e06c75; }
+#custom-ecoflow.charging   { color: #98c379; }

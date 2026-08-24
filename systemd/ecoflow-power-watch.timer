@@ -1,0 +1,13 @@
+[Unit]
+Description=Check mains power every minute
+
+[Timer]
+# OnCalendar rather than OnUnitActiveSec: the latter anchors the next run to the
+# unit's last activation, and a oneshot that also gets run by hand loses that
+# anchor and stops scheduling. A wall-clock schedule cannot drift out.
+OnCalendar=*:0/1
+AccuracySec=10s
+Persistent=false
+
+[Install]
+WantedBy=timers.target
