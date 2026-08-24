@@ -37,9 +37,15 @@ done
 # ---------------------------------------------------------------- source files
 # Works both from a clone and from `curl | bash`, where $0 is stdin and there is
 # no repo on disk to copy from.
+# Piped from curl there is no script on disk: BASH_SOURCE is empty, so
+# dirname yields "." and a bare `test -f ./core/...` would happily pick up
+# whatever happens to sit in the caller's working directory. Require an actual
+# script path before trusting anything local.
 SRC=""
-if [ -f "$(dirname "${BASH_SOURCE[0]}")/core/ecoflow-battery" ] 2>/dev/null; then
-  SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_self="${BASH_SOURCE[0]:-}"
+if [ -n "$_self" ] && [ -f "$_self" ]; then
+  _dir="$(cd "$(dirname "$_self")" && pwd)"
+  [ -f "$_dir/core/ecoflow-battery" ] && SRC="$_dir"
 fi
 
 fetch() { # fetch <repo-relative-path> <destination>
