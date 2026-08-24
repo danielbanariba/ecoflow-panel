@@ -177,4 +177,10 @@ echo
 echo "  ecoflow-battery              current charge"
 echo "  ecoflow-battery --json       all 242 fields"
 echo "  ecoflow-power-watch --status mains present or not"
-echo "  $0 --uninstall               remove everything"
+# Piped from curl, $0 is "bash", so print the command that actually works.
+if [ -n "$SRC" ]; then
+  echo "  $0 --uninstall               remove everything"
+else
+  echo "  curl -fsSL $REPO_RAW/install.sh | bash -s -- --uninstall"
+  echo "                               remove everything"
+fi
