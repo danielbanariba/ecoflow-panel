@@ -37,6 +37,23 @@ def ntfy_topic():
         return None
 
 
+def num(d, *keys):
+    """First key that carries a real number, or None. `or 0` cannot be used
+    here: it maps a missing key onto a legitimate reading of zero."""
+    for k in keys:
+        v = d.get(k)
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            return float(v)
+    return None
+
+
+def pick_soc(d):
+    """ems.lcdShowSoc is what the unit prints on its own screen, so prefer it
+    over the raw BMS figures, which drift a percent or two from the display."""
+    v = num(d, "ems.lcdShowSoc", "bmsMaster.soc", "bms_bmsStatus.soc", "pd.soc", "soc")
+    return round(v) if v is not None else None
+
+
 def reading():
     try:
         out = subprocess.run([HELPER, "--json", "--force"],
@@ -44,12 +61,19 @@ def reading():
         if out.returncode != 0:
             return None
         d = json.loads(out.stdout)
+        volts = num(d, "inv.acInVol")
+        soc = pick_soc(d)
+        # Mains voltage and charge are the two figures the outage decision rests
+        # on. If either is absent the payload is partial, and guessing produces
+        # a blackout that never happened -- refuse to judge instead.
+        if volts is None or soc is None:
+            return None
         return {
-            "volts": float(d.get("inv.acInVol") or 0) / 1000.0,
-            "in_watts": float(d.get("inv.inputWatts") or 0),
-            "out_watts": float(d.get("inv.outputWatts") or d.get("bmsMaster.outputWatts") or 0),
-            "soc": round(float(d.get("ems.lcdShowSoc") or 0)),
-            "dsg_min": int(d.get("ems.dsgRemainTime") or 0),
+            "volts": volts / 1000.0,
+            "in_watts": num(d, "inv.inputWatts") or 0.0,
+            "out_watts": num(d, "inv.outputWatts", "bmsMaster.outputWatts") or 0.0,
+            "soc": soc,
+            "dsg_min": int(num(d, "ems.dsgRemainTime") or 0),
         }
     except Exception:
         return None
@@ -82,8 +106,10 @@ def log_event(kind, soc, minutes=None):
 
 
 def human(mins):
+    if mins is None:
+        return None
     if mins <= 0:
-        return ""
+        return "menos de 1 min"
     return f"{mins // 60} h {mins % 60} min" if mins >= 60 else f"{mins} min"
 
 
@@ -123,7 +149,7 @@ def show_log():
             total += int(p[3])
         print(f"  {p[0]:<21} {p[1]:<8} {p[2]+'%':>7}  {dur}")
     cortes = sum(1 for l in lines if "\tcorte\t" in l)
-    print(f"\n  {cortes} corte(s), {human(total) or '0 min'} sin red en total")
+    print(f"\n  {cortes} corte(s), {human(total) if total else '0 min'} sin red en total")
     return 0
 
 
