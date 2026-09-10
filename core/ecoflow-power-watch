@@ -184,7 +184,9 @@ def main():
             body = f"{stamp} · batería {r['soc']}%"
             if r["dsg_min"] > 0:
                 body += f" · autonomía {human(r['dsg_min'])}"
-            tags, prio = "electric_plug,warning", "urgent"
+            # high, not urgent: ntfy's top priority buzzes the phone with a long,
+            # insistent pattern. This matches the usage alert's vibration.
+            tags, prio = "electric_plug,warning", "high"
             if "--dry-run" not in args:
                 log_event("corte", r["soc"])
         else:
