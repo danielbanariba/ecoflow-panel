@@ -10,16 +10,22 @@ Only transitions are announced, so a sustained outage does not repeat every
 tick, and the first run stays silent rather than announcing whatever state it
 happens to find.
 
+Every default run (not --dry-run, --status or --log) also stores one raw
+sample in samples.db, next to the outage log -- see README for the schema.
+Recording is best effort: a failure there is reported on stderr and can
+never block the alert above.
+
   --dry-run   evaluate and report, send nothing
   --status    print the current reading and exit
   --log       print the outage history and the total time without mains
 """
-import json, os, subprocess, sys, urllib.request
+import json, os, sqlite3, subprocess, sys, time, urllib.request
 from datetime import datetime
 
 STATE = os.path.expanduser("~/.cache/ecoflow-power-watch.json")
 # The cache can be wiped; the log is history, so it lives in share/ not cache/.
 LOG = os.path.expanduser("~/.local/share/ecoflow/outages.log")
+SAMPLES_DB = os.path.expanduser("~/.local/share/ecoflow/samples.db")
 HELPER = os.path.expanduser("~/.local/bin/ecoflow-battery")
 NTFY_HOST = "https://ntfy.sh"
 # Below this the wall is considered dead. Real brownouts sit far above it, and
@@ -54,29 +60,112 @@ def pick_soc(d):
     return round(v) if v is not None else None
 
 
-def reading():
+# Schema v1 (see README): column -> (num() keys, transform on the raw value,
+# SQL column type). `soc` is not listed here: it comes from pick_soc(), which
+# walks a fallback chain rather than a plain num() lookup.
+SAMPLE_FIELDS = (
+    ("grid_v",         ("inv.acInVol",),           (lambda v: v / 1000.0), "REAL"),
+    ("grid_hz",        ("inv.acInFreq",),          None,                    "REAL"),
+    ("ac_in_w",        ("inv.inputWatts",),        None,                    "REAL"),
+    ("ac_out_w",       ("inv.outputWatts",),       None,                    "REAL"),
+    ("in_w",           ("pd.wattsInSum",),         None,                    "REAL"),
+    ("out_w",          ("pd.wattsOutSum",),        None,                    "REAL"),
+    ("solar_in_w",     ("mppt.inWatts",),          None,                    "REAL"),
+    ("batt_in_w",      ("bmsMaster.inputWatts",),  None,                    "REAL"),
+    ("batt_out_w",     ("bmsMaster.outputWatts",), None,                    "REAL"),
+    ("batt_temp_c",    ("bmsMaster.temp",),        None,                    "REAL"),
+    ("chg_ac_wh",      ("pd.chgPowerAc",),         None,                    "REAL"),
+    ("chg_dc_wh",      ("pd.chgPowerDc",),         None,                    "REAL"),
+    ("chg_solar_wh",   ("pd.chgSunPower",),        None,                    "REAL"),
+    ("dsg_ac_wh",      ("pd.dsgPowerAc",),         None,                    "REAL"),
+    ("dsg_dc_wh",      ("pd.dsgPowerDc",),         None,                    "REAL"),
+    ("cycles",         ("bmsMaster.cycles",),      None,                    "INTEGER"),
+    ("soh",            ("bmsMaster.soh",),         None,                    "REAL"),
+    ("chg_remain_min", ("ems.chgRemainTime",),     None,                    "INTEGER"),
+    ("dsg_remain_min", ("ems.dsgRemainTime",),     None,                    "INTEGER"),
+)
+
+_SAMPLE_COLUMNS = ("ts", "soc") + tuple(column for column, *_ in SAMPLE_FIELDS)
+_CREATE_TABLE_SQL = "CREATE TABLE IF NOT EXISTS samples ({})".format(", ".join(
+    ["ts INTEGER PRIMARY KEY", "soc INTEGER"]
+    + [f"{column} {sqltype}" for column, _, _, sqltype in SAMPLE_FIELDS]
+))
+_INSERT_SQL = "INSERT OR IGNORE INTO samples ({}) VALUES ({})".format(
+    ", ".join(_SAMPLE_COLUMNS), ", ".join("?" for _ in _SAMPLE_COLUMNS))
+
+
+def sample_row(d, ts):
+    """Map one already-fetched payload onto schema v1: a dict ready for
+    INSERT, keyed by column name plus "ts". A source key that is missing or
+    not a real number becomes NULL -- never 0, which would read back as a
+    real measurement (see num()'s docstring)."""
+    row = {"ts": ts, "soc": pick_soc(d)}
+    for column, keys, transform, _sqltype in SAMPLE_FIELDS:
+        v = num(d, *keys)
+        row[column] = v if v is None or transform is None else transform(v)
+    return row
+
+
+def record_sample(d, ts):
+    """Insert one row for this run's payload into the sample history.
+    Best effort and isolated: any failure (a locked file, a full disk, a
+    directory that cannot be created) is reported on stderr and swallowed,
+    so recording can never block the outage alert, the state update, or the
+    exit status."""
+    try:
+        row = sample_row(d, ts)
+        os.makedirs(os.path.dirname(SAMPLES_DB), exist_ok=True)
+        conn = sqlite3.connect(SAMPLES_DB)
+        try:
+            existed = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='samples'"
+            ).fetchone() is not None
+            conn.execute(_CREATE_TABLE_SQL)
+            conn.execute("PRAGMA journal_mode=WAL")
+            if not existed:
+                conn.execute("PRAGMA user_version = 1")
+            conn.execute(_INSERT_SQL, [row[c] for c in _SAMPLE_COLUMNS])
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as e:
+        print(f"ecoflow-power-watch: could not record sample: {e}", file=sys.stderr)
+
+
+def fetch_payload():
+    """Run the helper once and parse its JSON. None if the call failed,
+    timed out, or the output was not a JSON object. The one seam that tests
+    stub so no real API call is ever made."""
     try:
         out = subprocess.run([HELPER, "--json", "--force"],
                              capture_output=True, text=True, timeout=30)
         if out.returncode != 0:
             return None
         d = json.loads(out.stdout)
-        volts = num(d, "inv.acInVol")
-        soc = pick_soc(d)
-        # Mains voltage and charge are the two figures the outage decision rests
-        # on. If either is absent the payload is partial, and guessing produces
-        # a blackout that never happened -- refuse to judge instead.
-        if volts is None or soc is None:
-            return None
-        return {
-            "volts": volts / 1000.0,
-            "in_watts": num(d, "inv.inputWatts") or 0.0,
-            "out_watts": num(d, "inv.outputWatts", "bmsMaster.outputWatts") or 0.0,
-            "soc": soc,
-            "dsg_min": int(num(d, "ems.dsgRemainTime") or 0),
-        }
+        return d if isinstance(d, dict) else None
     except Exception:
         return None
+
+
+def reading(d):
+    """Build the outage-decision reading from an already-fetched payload.
+    None if there is no payload, or if it lacks either of the two figures
+    the decision rests on: mains voltage and charge. If either is absent the
+    payload is partial, and guessing produces a blackout that never happened
+    -- refuse to judge instead."""
+    if d is None:
+        return None
+    volts = num(d, "inv.acInVol")
+    soc = pick_soc(d)
+    if volts is None or soc is None:
+        return None
+    return {
+        "volts": volts / 1000.0,
+        "in_watts": num(d, "inv.inputWatts") or 0.0,
+        "out_watts": num(d, "inv.outputWatts", "bmsMaster.outputWatts") or 0.0,
+        "soc": soc,
+        "dsg_min": int(num(d, "ems.dsgRemainTime") or 0),
+    }
 
 
 def push(title, body, topic, tags, priority):
@@ -157,7 +246,17 @@ def main():
     args = sys.argv[1:]
     if "--log" in args:
         return show_log()
-    r = reading()
+
+    d = fetch_payload()
+    ts = int(time.time())
+    # Record whatever payload was obtained before the partial-payload bail-out
+    # below can discard it -- a partial reading still becomes a row with NULLs
+    # in the missing columns, not a lost minute. Only the default (timer) path
+    # writes to disk.
+    if d is not None and "--dry-run" not in args and "--status" not in args:
+        record_sample(d, ts)
+
+    r = reading(d)
     if not r:
         print("no reading", file=sys.stderr)
         return 1

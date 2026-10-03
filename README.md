@@ -99,6 +99,51 @@ Which has a consequence worth planning around: if mains power drops, the alert
 is sent **by your machine**. The PC and the router both have to be running off
 the pack, or nothing gets sent.
 
+## Sample history
+
+Every timer run also stores one row in `~/.local/share/ecoflow/samples.db`,
+next to `outages.log` — a raw, per-minute history for a future stats app
+(outages, consumption, battery) to work from. Recording is best effort: a
+storage failure is logged to stderr and never blocks the outage alert above.
+
+| Column | Unit | Source |
+|---|---|---|
+| `ts` (primary key) | UTC epoch seconds | fetch time |
+| `grid_v` | V | `inv.acInVol` / 1000 |
+| `grid_hz` | Hz | `inv.acInFreq` |
+| `ac_in_w` / `ac_out_w` | W | `inv.inputWatts` / `inv.outputWatts` |
+| `in_w` / `out_w` | W | `pd.wattsInSum` / `pd.wattsOutSum` |
+| `solar_in_w` | W | `mppt.inWatts` |
+| `batt_in_w` / `batt_out_w` | W | `bmsMaster.inputWatts` / `bmsMaster.outputWatts` |
+| `soc` | % | `ems.lcdShowSoc`, falling back through the BMS figures |
+| `batt_temp_c` | °C | `bmsMaster.temp` |
+| `chg_ac_wh` / `chg_dc_wh` / `chg_solar_wh` | Wh, cumulative | `pd.chgPowerAc` / `pd.chgPowerDc` / `pd.chgSunPower` |
+| `dsg_ac_wh` / `dsg_dc_wh` | Wh, cumulative | `pd.dsgPowerAc` / `pd.dsgPowerDc` |
+| `cycles` | count | `bmsMaster.cycles` |
+| `soh` | % | `bmsMaster.soh` |
+| `chg_remain_min` / `dsg_remain_min` | min | `ems.chgRemainTime` / `ems.dsgRemainTime` |
+
+A key the device did not report that minute is stored as `NULL`, never `0` —
+a missing reading and a real zero are different facts, and conflating them
+once already wrote a phantom outage into `outages.log`.
+
+Measured growth: 1,440 synthetic rows (one day at one sample a minute) take
+about 100 KB in a scratch database, so a year of history comes to roughly
+36 MB — small enough to keep indefinitely. `./install.sh --uninstall` removes
+the binaries, units and frontends but never touches
+`~/.local/share/ecoflow`, so the history survives a reinstall.
+
+```bash
+sqlite3 ~/.local/share/ecoflow/samples.db \
+  "select datetime(ts, 'unixepoch', 'localtime'), grid_v, soc from samples order by ts desc limit 5;"
+```
+
+Tests live in `tests/` and run with:
+
+```bash
+python3 -m pytest tests/ -q
+```
+
 ## Requirements
 
 - Python 3.8+, `curl`
