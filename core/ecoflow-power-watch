@@ -88,8 +88,13 @@ def push(title, body, topic, tags, priority):
             urllib.request.urlopen(req, timeout=10).read()
         except Exception as e:
             print(f"ntfy failed: {e}", file=sys.stderr)
-    subprocess.run(["notify-send", "-a", "EcoFlow", "-i", "battery",
-                    "-u", "critical", title, body], check=False)
+    # notify-send is optional. Missing, it must not abort the run before the
+    # state is saved, or the next tick re-announces the same transition.
+    try:
+        subprocess.run(["notify-send", "-a", "EcoFlow", "-i", "battery",
+                        "-u", "critical", title, body], check=False)
+    except OSError as e:
+        print(f"notify-send failed: {e}", file=sys.stderr)
 
 
 def log_event(kind, soc, minutes=None):
