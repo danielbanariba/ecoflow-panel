@@ -130,7 +130,9 @@ def outage_minutes(now):
         if len(parts) >= 2 and parts[1] == "corte":
             try:
                 started = datetime.strptime(parts[0], "%Y-%m-%d %H:%M:%S")
-                return max(0, int((now - started).total_seconds() // 60))
+                # Compare as epoch seconds: naive wall-clock subtraction is
+                # off by an hour when the outage spans a DST change.
+                return max(0, int((now.timestamp() - started.timestamp()) // 60))
             except ValueError:
                 return None
         if len(parts) >= 2 and parts[1] == "retorno":

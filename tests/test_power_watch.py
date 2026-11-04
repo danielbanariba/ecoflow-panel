@@ -1,4 +1,5 @@
-import json, os, sys, tempfile, unittest
+import json, os, sys, tempfile, time, unittest
+from datetime import datetime
 from unittest import mock
 
 from tests.helpers import load_script
@@ -43,6 +44,37 @@ class NotifySendMissing(WatchCase):
             self.assertEqual(sum("\tcorte\t" in l for l in fh), 1)
         with open(self.w.STATE) as fh:
             self.assertEqual(json.load(fh), {"live": False})
+
+
+class OutageAcrossDst(WatchCase):
+    """The log holds naive local wall-clock stamps. Subtracting two of them
+    across a DST change is off by the shift: an hour lost or gained."""
+
+    def setUp(self):
+        super().setUp()
+        p = mock.patch.dict(os.environ, {"TZ": "America/Chicago"})
+        p.start()
+        self.addCleanup(p.stop)
+        self.addCleanup(time.tzset)
+        time.tzset()
+        os.makedirs(os.path.dirname(self.w.LOG))
+
+    def minutes(self, started, ended_epoch):
+        with open(self.w.LOG, "w") as fh:
+            fh.write(f"{started}\tcorte\t97\t\n")
+        return self.w.outage_minutes(datetime.fromtimestamp(ended_epoch))
+
+    def test_fall_back(self):
+        # 00:50 CDT, then the clocks go 02:00 CDT -> 01:00 CST; 80 min later
+        # the wall reads 01:10 CST.
+        start = datetime(2026, 11, 1, 0, 50).timestamp()
+        self.assertEqual(self.minutes("2026-11-01 00:50:00", start + 80 * 60), 80)
+
+    def test_spring_forward(self):
+        # 01:50 CST, then the clocks go 02:00 CST -> 03:00 CDT; 20 min later
+        # the wall reads 03:10 CDT.
+        start = datetime(2026, 3, 8, 1, 50).timestamp()
+        self.assertEqual(self.minutes("2026-03-08 01:50:00", start + 20 * 60), 20)
 
 
 if __name__ == "__main__":
