@@ -41,9 +41,15 @@ def save_sn(sn):
     try:
         with open(CONF) as fh:
             lines = fh.readlines()
+        found = any(line.startswith("DEVICE_SN=") for line in lines)
         with open(CONF, "w") as fh:
             for line in lines:
                 fh.write(f"DEVICE_SN={sn}\n" if line.startswith("DEVICE_SN=") else line)
+            # A hand-written file may have no DEVICE_SN line to replace.
+            if not found:
+                if lines and not lines[-1].endswith("\n"):
+                    fh.write("\n")
+                fh.write(f"DEVICE_SN={sn}\n")
     except OSError:
         pass
 

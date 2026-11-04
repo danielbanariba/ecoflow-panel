@@ -47,5 +47,28 @@ class CacheClock(BatteryCase):
         call.assert_not_called()
 
 
+class DiscoverStoresSerial(BatteryCase):
+    DEVICES = {"code": "0", "data": [{"sn": "R331ZEB4ZE123456", "online": 1}]}
+
+    def discover(self):
+        with mock.patch.object(self.b, "call", return_value=self.DEVICES):
+            return self.run_main("--discover")
+
+    def test_file_without_a_device_sn_line(self):
+        # A hand-written file with only the two keys, last line unterminated.
+        self.write_conf("ACCESS_KEY=a\nSECRET_KEY=b")
+        rc, out = self.discover()
+        self.assertEqual(rc, 0)
+        self.assertIn("stored DEVICE_SN=R331ZEB4ZE123456", out)
+        self.assertEqual(self.b.conf(), {"ACCESS_KEY": "a", "SECRET_KEY": "b",
+                                         "DEVICE_SN": "R331ZEB4ZE123456"})
+
+    def test_template_line_is_filled_in_place(self):
+        self.write_conf("ACCESS_KEY=a\nSECRET_KEY=b\nDEVICE_SN=\n")
+        self.discover()
+        with open(self.b.CONF) as fh:
+            self.assertEqual(fh.read(), "ACCESS_KEY=a\nSECRET_KEY=b\nDEVICE_SN=R331ZEB4ZE123456\n")
+
+
 if __name__ == "__main__":
     unittest.main()
