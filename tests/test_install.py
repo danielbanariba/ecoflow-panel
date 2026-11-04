@@ -61,5 +61,34 @@ class CredentialsKept(InstallCase):
         self.assertIn("device serial already stored", p.stdout)
 
 
+CURL_FROM_REPO = r'''out=""; url=""
+while [ $# -gt 0 ]; do
+  case "$1" in -o) out="$2"; shift ;; -*) ;; *) url="$1" ;; esac
+  shift
+done
+cp "@ROOT@/${url#@RAW@/}" "$out"'''
+
+
+class PipedFromCurl(InstallCase):
+    RAW = "https://raw.githubusercontent.com/danielbanariba/ecoflow-panel/main"
+
+    def setUp(self):
+        super().setUp()
+        # curl serves the repo's own files, as raw.githubusercontent.com would.
+        self.stub("curl", CURL_FROM_REPO.replace("@RAW@", self.RAW).replace("@ROOT@", ROOT))
+
+    def test_waybar_snippet_hint_points_somewhere_real(self):
+        with open(INSTALL) as fh:
+            p = subprocess.run(["bash", "-s", "--", "--frontend", "waybar", "--no-watch"],
+                               stdin=fh, env=self.env, cwd=self.home,
+                               capture_output=True, text=True, timeout=60)
+        self.assertTrue(os.path.exists(os.path.join(self.home, ".local", "bin", "ecoflow-waybar")),
+                        p.stdout + p.stderr)
+        hint = next(l for l in p.stdout.splitlines() if "snippet to paste" in l)
+        # Piped there is no checkout: './waybar/config.jsonc' names a file
+        # in whatever directory the user happened to be standing in.
+        self.assertIn(f"{self.RAW}/waybar/config.jsonc", hint)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -153,7 +153,8 @@ case "$FRONTEND" in
   waybar)
     fetch "waybar/ecoflow-waybar" "$BIN/ecoflow-waybar" && chmod 755 "$BIN/ecoflow-waybar"
     ok "waybar helper installed at $BIN/ecoflow-waybar"
-    echo "     snippet to paste into your config: $(dirname "$0")/waybar/config.jsonc"
+    # Piped from curl there is no checkout for a relative path to point into.
+    echo "     snippet to paste into your config: ${SRC:-$REPO_RAW}/waybar/config.jsonc"
     ;;
   none)
     warn "no supported panel found — the CLI still works"
