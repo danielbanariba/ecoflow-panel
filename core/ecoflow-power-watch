@@ -117,15 +117,26 @@ def record_sample(d, ts):
         os.makedirs(os.path.dirname(SAMPLES_DB), exist_ok=True)
         conn = sqlite3.connect(SAMPLES_DB)
         try:
+            # journal_mode cannot change inside a transaction, so it goes
+            # first; the table and its schema version are then created in one
+            # transaction with the row, so a run that dies half-way leaves
+            # neither a table at version 0 nor a version without a table.
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("BEGIN IMMEDIATE")
             existed = conn.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name='samples'"
             ).fetchone() is not None
             conn.execute(_CREATE_TABLE_SQL)
-            conn.execute("PRAGMA journal_mode=WAL")
             if not existed:
                 conn.execute("PRAGMA user_version = 1")
-            conn.execute(_INSERT_SQL, [row[c] for c in _SAMPLE_COLUMNS])
+            cur = conn.execute(_INSERT_SQL, [row[c] for c in _SAMPLE_COLUMNS])
             conn.commit()
+            # OR IGNORE keeps the row already at this second (a clock stepped
+            # back, two runs in one second); the dropped reading is still a
+            # failure to record, so say so.
+            if cur.rowcount == 0:
+                print(f"ecoflow-power-watch: could not record sample: "
+                      f"ts {ts} already has a row, reading dropped", file=sys.stderr)
         finally:
             conn.close()
     except Exception as e:
@@ -249,15 +260,17 @@ def main():
 
     d = fetch_payload()
     ts = int(time.time())
-    # Record whatever payload was obtained before the partial-payload bail-out
-    # below can discard it -- a partial reading still becomes a row with NULLs
-    # in the missing columns, not a lost minute. Only the default (timer) path
-    # writes to disk.
-    if d is not None and "--dry-run" not in args and "--status" not in args:
-        record_sample(d, ts)
+    # Only the default (timer) path writes a sample, and always after the
+    # alert and the state update: a locked database waits up to sqlite's busy
+    # timeout, and that wait must never stand in front of the phone push.
+    record = d is not None and "--dry-run" not in args and "--status" not in args
 
     r = reading(d)
     if not r:
+        # A partial reading still becomes a row with NULLs in the missing
+        # columns, not a lost minute.
+        if record:
+            record_sample(d, ts)
         print("no reading", file=sys.stderr)
         return 1
 
@@ -317,6 +330,8 @@ def main():
                 json.dump({"live": live}, fh)
         except OSError:
             pass
+    if record:
+        record_sample(d, ts)
     return 0
 
 

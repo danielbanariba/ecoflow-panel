@@ -133,6 +133,8 @@ about 100 KB in a scratch database, so a year of history comes to roughly
 the binaries, units and frontends but never touches
 `~/.local/share/ecoflow`, so the history survives a reinstall.
 
+The database runs in SQLite's WAL mode, which does not work on network filesystems — keep `~/.local/share` on a local disk, not an NFS or SMB home.
+
 ```bash
 sqlite3 ~/.local/share/ecoflow/samples.db \
   "select datetime(ts, 'unixepoch', 'localtime'), grid_v, soc from samples order by ts desc limit 5;"

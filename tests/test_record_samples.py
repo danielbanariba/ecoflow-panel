@@ -194,3 +194,96 @@ def test_two_runs_at_different_times_produce_two_rows(mod, monkeypatch):
 
     rows = all_rows(mod.SAMPLES_DB)
     assert len(rows) == 2
+
+
+def test_outage_alert_goes_out_before_the_sample_is_recorded(mod, monkeypatch):
+    """Catches recording ahead of the alert: whatever the database does --
+    wait on a lock, hit a full disk -- must happen after the phone has been
+    told, never in front of it."""
+    with open(mod.STATE, "w") as fh:
+        json.dump({"live": True}, fh)
+    order = []
+    monkeypatch.setattr(mod, "fetch_payload", lambda: make_payload({"inv.acInVol": 0}))
+    monkeypatch.setattr(mod, "push", lambda *a, **k: order.append("push"))
+    monkeypatch.setattr(mod, "record_sample", lambda *a, **k: order.append("record"))
+    monkeypatch.setattr(sys, "argv", ["ecoflow-power-watch"])
+
+    assert mod.main() == 0
+
+    assert order == ["push", "record"]
+
+
+def test_locked_database_does_not_delay_the_alert(mod, monkeypatch, capsys):
+    """Catches the 5 s busy wait on a write-locked database landing in front
+    of the outage alert. The sample is still attempted, and its failure is
+    still reported."""
+    import time as _time
+
+    mod.record_sample(make_payload(), 1_700_000_000)          # create the db
+    holder = sqlite3.connect(mod.SAMPLES_DB, isolation_level=None)
+    holder.execute("BEGIN IMMEDIATE")                        # another writer
+    try:
+        with open(mod.STATE, "w") as fh:
+            json.dump({"live": True}, fh)
+        sent = []
+        start = _time.monotonic()
+        monkeypatch.setattr(mod, "fetch_payload", lambda: make_payload({"inv.acInVol": 0}))
+        monkeypatch.setattr(mod, "push", lambda *a, **k: sent.append(_time.monotonic() - start))
+        monkeypatch.setattr(sys, "argv", ["ecoflow-power-watch"])
+
+        assert mod.main() == 0
+    finally:
+        holder.execute("ROLLBACK")
+        holder.close()
+
+    assert len(sent) == 1 and sent[0] < 2.5
+    assert "could not record sample" in capsys.readouterr().err
+
+
+def test_reading_dropped_on_an_existing_second_is_reported(mod, capsys):
+    """Catches INSERT OR IGNORE discarding a reading in silence. After the
+    clock is stepped back, a new reading can land on a second that already
+    has a row; the primary key keeps the old row, but the loss must reach
+    stderr like every other recording failure."""
+    mod.record_sample(make_payload(), 1_700_000_000)
+    assert capsys.readouterr().err == ""
+
+    mod.record_sample(make_payload({"inv.acInVol": 0, "ems.lcdShowSoc": 55}), 1_700_000_000)
+
+    err = capsys.readouterr().err
+    assert "could not record sample" in err and "1700000000" in err
+    rows = all_rows(mod.SAMPLES_DB)
+    assert [(r["ts"], r["soc"]) for r in rows] == [(1_700_000_000, 97)]
+
+
+def test_schema_version_survives_a_failure_right_after_create(mod, monkeypatch):
+    """Catches CREATE TABLE and PRAGMA user_version landing in separate
+    transactions. If the first run dies between the two, the table exists
+    with version 0, every later run sees an existing table and never sets
+    it, and a future migration would misread a v1 database as unversioned."""
+    import types
+
+    class DiesAfterCreate(sqlite3.Connection):
+        created = False
+
+        def execute(self, sql, *a):
+            if DiesAfterCreate.created:
+                DiesAfterCreate.created = False
+                raise sqlite3.OperationalError("simulated crash after CREATE TABLE")
+            if sql.lstrip().upper().startswith("CREATE TABLE"):
+                DiesAfterCreate.created = True
+            return super().execute(sql, *a)
+
+    faulty = types.SimpleNamespace(
+        connect=lambda path, **k: sqlite3.connect(path, factory=DiesAfterCreate, **k))
+    monkeypatch.setattr(mod, "sqlite3", faulty)
+    mod.record_sample(make_payload(), 1_700_000_000)          # first run dies
+    monkeypatch.setattr(mod, "sqlite3", sqlite3)
+    mod.record_sample(make_payload(), 1_700_000_060)          # next run is fine
+
+    conn = sqlite3.connect(mod.SAMPLES_DB)
+    try:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 1
+    finally:
+        conn.close()
+    assert [r["ts"] for r in all_rows(mod.SAMPLES_DB)] == [1_700_000_060]
