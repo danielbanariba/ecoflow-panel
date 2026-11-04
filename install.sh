@@ -35,7 +35,22 @@ while [ $# -gt 0 ]; do
         *) die "--frontend takes kde | gnome | waybar | none, not '${2:-}'" ;;
       esac
       shift ;;
-    -h|--help)   sed -n '2,14p' "$0"; exit 0 ;;
+    -h|--help)
+      # Not read back from "$0": piped from curl, $0 is 'bash' and there is
+      # no file to print the header from.
+      cat <<EOF
+ecoflow-panel installer.
+
+  curl -fsSL $REPO_RAW/install.sh | bash
+
+Installs the core client, detects the running desktop, and installs the panel
+frontend that fits it. Safe to re-run: every step is idempotent.
+
+  --uninstall     remove everything this installed
+  --no-watch      skip the power-outage timer
+  --frontend X    force kde | gnome | waybar | none
+EOF
+      exit 0 ;;
   esac
   shift
 done

@@ -79,6 +79,23 @@ class UnknownFrontend(InstallCase):
         self.assertEqual(p.returncode, 0, p.stderr)
 
 
+class Help(InstallCase):
+    def check(self, p):
+        self.assertEqual(p.returncode, 0, p.stderr)
+        for flag in ("--uninstall", "--no-watch", "--frontend"):
+            self.assertIn(flag, p.stdout)
+        self.assertFalse(os.path.exists(os.path.join(self.home, ".local", "bin")))
+
+    def test_help_from_a_checkout(self):
+        self.check(self.install("--help"))
+
+    def test_help_when_piped_from_curl(self):
+        # Piped, $0 is 'bash': there is no file to print the header from.
+        with open(INSTALL) as fh:
+            self.check(subprocess.run(["bash", "-s", "--", "--help"], stdin=fh, env=self.env,
+                                      cwd=self.home, capture_output=True, text=True, timeout=60))
+
+
 CURL_FROM_REPO = r'''out=""; url=""
 while [ $# -gt 0 ]; do
   case "$1" in -o) out="$2"; shift ;; -*) ;; *) url="$1" ;; esac
