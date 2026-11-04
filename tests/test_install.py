@@ -61,6 +61,24 @@ class CredentialsKept(InstallCase):
         self.assertIn("device serial already stored", p.stdout)
 
 
+class UnknownFrontend(InstallCase):
+    def test_unknown_value_fails_before_installing_anything(self):
+        p = self.install("--frontend", "xfce", "--no-watch")
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn("xfce", p.stderr)
+        self.assertIn("kde | gnome | waybar | none", p.stderr)
+        self.assertFalse(os.path.exists(os.path.join(self.home, ".local", "bin", "ecoflow-battery")))
+
+    def test_missing_value_fails(self):
+        p = self.install("--no-watch", "--frontend")
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn("kde | gnome | waybar | none", p.stderr)
+
+    def test_known_value_still_installs(self):
+        p = self.install("--frontend", "none", "--no-watch")
+        self.assertEqual(p.returncode, 0, p.stderr)
+
+
 CURL_FROM_REPO = r'''out=""; url=""
 while [ $# -gt 0 ]; do
   case "$1" in -o) out="$2"; shift ;; -*) ;; *) url="$1" ;; esac

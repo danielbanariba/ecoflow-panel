@@ -28,7 +28,13 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --uninstall) MODE=uninstall ;;
     --no-watch)  WATCH=0 ;;
-    --frontend)  FRONTEND="${2:-}"; shift ;;
+    --frontend)
+      # Unknown names used to fall through the frontend case and install none.
+      case "${2:-}" in
+        kde|gnome|waybar|none) FRONTEND="$2" ;;
+        *) die "--frontend takes kde | gnome | waybar | none, not '${2:-}'" ;;
+      esac
+      shift ;;
     -h|--help)   sed -n '2,14p' "$0"; exit 0 ;;
   esac
   shift
