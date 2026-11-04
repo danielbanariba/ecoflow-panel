@@ -111,7 +111,8 @@ def pick_soc(data):
         v = data.get(key)
         if isinstance(v, (int, float)):
             return round(float(v))
-    cand = [k for k in data if k.lower().endswith("soc")]
+    cand = [k for k in data if k.lower().endswith("soc")
+            and isinstance(data[k], (int, float))]
     return round(float(data[cand[0]])) if cand else None
 
 

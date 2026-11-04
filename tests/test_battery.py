@@ -70,5 +70,21 @@ class DiscoverStoresSerial(BatteryCase):
             self.assertEqual(fh.read(), "ACCESS_KEY=a\nSECRET_KEY=b\nDEVICE_SN=R331ZEB4ZE123456\n")
 
 
+class PickSocNonNumeric(BatteryCase):
+    """The fallback scan took the first key ending in 'soc' and called
+    float() on whatever it held, so a null in the payload was a traceback."""
+
+    def test_null_primary_falls_through_to_a_numeric_soc(self):
+        self.assertEqual(self.b.pick_soc({"ems.lcdShowSoc": None,
+                                          "bmsMaster.f32ShowSoc": 96.7}), 97)
+
+    def test_panel_with_only_a_null_soc_reports_none(self):
+        with open(self.b.CACHE, "w") as fh:
+            json.dump({"at": time.time(), "data": {"ems.lcdShowSoc": None}}, fh)
+        rc, out = self.run_main("--panel")
+        self.assertEqual(rc, 0)
+        self.assertIsNone(json.loads(out)["soc"])
+
+
 if __name__ == "__main__":
     unittest.main()
