@@ -97,7 +97,9 @@ esac
 # ------------------------------------------------------------ credentials
 step "Credentials"
 mkdir -p "$CONF"
-if [ -s "$CONF/credentials" ] && grep -q '^ACCESS_KEY=.\+' "$CONF/credentials"; then
+# Match what ecoflow-battery's conf() accepts: whitespace around the key and
+# the '=' is fine there, so it must not read as 'no keys' and get overwritten.
+if [ -s "$CONF/credentials" ] && grep -q '^[[:space:]]*ACCESS_KEY[[:space:]]*=[[:space:]]*[^[:space:]]' "$CONF/credentials"; then
   ok "already present, left untouched"
 else
   fetch "core/credentials.example" "$CONF/credentials" || die "could not fetch the template"
@@ -108,7 +110,7 @@ else
 fi
 
 if [ -z "${NEEDS_KEYS:-}" ]; then
-  if grep -q '^DEVICE_SN=.\+' "$CONF/credentials"; then
+  if grep -q '^[[:space:]]*DEVICE_SN[[:space:]]*=[[:space:]]*[^[:space:]]' "$CONF/credentials"; then
     ok "device serial already stored"
   else
     if "$BIN/ecoflow-battery" --discover >/dev/null 2>&1; then
