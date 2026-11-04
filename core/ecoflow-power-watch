@@ -249,15 +249,17 @@ def main():
 
     d = fetch_payload()
     ts = int(time.time())
-    # Record whatever payload was obtained before the partial-payload bail-out
-    # below can discard it -- a partial reading still becomes a row with NULLs
-    # in the missing columns, not a lost minute. Only the default (timer) path
-    # writes to disk.
-    if d is not None and "--dry-run" not in args and "--status" not in args:
-        record_sample(d, ts)
+    # Only the default (timer) path writes a sample, and always after the
+    # alert and the state update: a locked database waits up to sqlite's busy
+    # timeout, and that wait must never stand in front of the phone push.
+    record = d is not None and "--dry-run" not in args and "--status" not in args
 
     r = reading(d)
     if not r:
+        # A partial reading still becomes a row with NULLs in the missing
+        # columns, not a lost minute.
+        if record:
+            record_sample(d, ts)
         print("no reading", file=sys.stderr)
         return 1
 
@@ -317,6 +319,8 @@ def main():
                 json.dump({"live": live}, fh)
         except OSError:
             pass
+    if record:
+        record_sample(d, ts)
     return 0
 
 

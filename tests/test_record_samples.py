@@ -194,3 +194,47 @@ def test_two_runs_at_different_times_produce_two_rows(mod, monkeypatch):
 
     rows = all_rows(mod.SAMPLES_DB)
     assert len(rows) == 2
+
+
+def test_outage_alert_goes_out_before_the_sample_is_recorded(mod, monkeypatch):
+    """Catches recording ahead of the alert: whatever the database does --
+    wait on a lock, hit a full disk -- must happen after the phone has been
+    told, never in front of it."""
+    with open(mod.STATE, "w") as fh:
+        json.dump({"live": True}, fh)
+    order = []
+    monkeypatch.setattr(mod, "fetch_payload", lambda: make_payload({"inv.acInVol": 0}))
+    monkeypatch.setattr(mod, "push", lambda *a, **k: order.append("push"))
+    monkeypatch.setattr(mod, "record_sample", lambda *a, **k: order.append("record"))
+    monkeypatch.setattr(sys, "argv", ["ecoflow-power-watch"])
+
+    assert mod.main() == 0
+
+    assert order == ["push", "record"]
+
+
+def test_locked_database_does_not_delay_the_alert(mod, monkeypatch, capsys):
+    """Catches the 5 s busy wait on a write-locked database landing in front
+    of the outage alert. The sample is still attempted, and its failure is
+    still reported."""
+    import time as _time
+
+    mod.record_sample(make_payload(), 1_700_000_000)          # create the db
+    holder = sqlite3.connect(mod.SAMPLES_DB, isolation_level=None)
+    holder.execute("BEGIN IMMEDIATE")                        # another writer
+    try:
+        with open(mod.STATE, "w") as fh:
+            json.dump({"live": True}, fh)
+        sent = []
+        start = _time.monotonic()
+        monkeypatch.setattr(mod, "fetch_payload", lambda: make_payload({"inv.acInVol": 0}))
+        monkeypatch.setattr(mod, "push", lambda *a, **k: sent.append(_time.monotonic() - start))
+        monkeypatch.setattr(sys, "argv", ["ecoflow-power-watch"])
+
+        assert mod.main() == 0
+    finally:
+        holder.execute("ROLLBACK")
+        holder.close()
+
+    assert len(sent) == 1 and sent[0] < 2.5
+    assert "could not record sample" in capsys.readouterr().err
