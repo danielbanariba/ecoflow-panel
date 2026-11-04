@@ -5,6 +5,8 @@ from unittest import mock
 from tests.helpers import ROOT, load_script
 
 DEAD = {"volts": 0.0, "in_watts": 0.0, "out_watts": 300.0, "soc": 97, "dsg_min": 120}
+DEAD_PAYLOAD = {"inv.acInVol": 0, "inv.inputWatts": 0, "inv.outputWatts": 300,
+                "ems.lcdShowSoc": 97, "ems.dsgRemainTime": 120}
 
 
 class WatchCase(unittest.TestCase):
@@ -15,6 +17,14 @@ class WatchCase(unittest.TestCase):
         self.w.STATE = os.path.join(self.tmp.name, "state.json")
         self.w.LOG = os.path.join(self.tmp.name, "share", "outages.log")
         self.w.LOCK = os.path.join(self.tmp.name, "watch.lock")
+        self.w.SAMPLES_DB = os.path.join(self.tmp.name, "share", "samples.db")
+        # main() fetches before it judges: stub the fetch with the payload
+        # behind DEAD, and point HELPER nowhere, so no test can ever run the
+        # real ~/.local/bin/ecoflow-battery (and through it the live API).
+        self.w.HELPER = os.path.join(self.tmp.name, "no-such-helper")
+        p = mock.patch.object(self.w, "fetch_payload", return_value=dict(DEAD_PAYLOAD))
+        p.start()
+        self.addCleanup(p.stop)
         # A PATH with nothing on it: no notify-send, no dconf.
         empty = os.path.join(self.tmp.name, "bin")
         os.mkdir(empty)
@@ -124,6 +134,17 @@ class OverlappingRuns(WatchCase):
             # Once it is gone, the next run proceeds as usual.
             self.assertEqual(self.run_main(), 0)
             self.assertEqual(urlopen.call_count, 1)
+
+    def test_run_that_stands_down_still_records_its_sample(self):
+        import sqlite3
+        with open(self.w.LOCK, "w") as other:
+            fcntl.flock(other, fcntl.LOCK_EX)
+            self.assertEqual(self.run_main(), 0)
+        conn = sqlite3.connect(self.w.SAMPLES_DB)
+        try:
+            self.assertEqual(conn.execute("SELECT grid_v, soc FROM samples").fetchall(), [(0.0, 97)])
+        finally:
+            conn.close()
 
     def test_lock_is_released_between_runs(self):
         with mock.patch.object(self.w, "reading", return_value=dict(DEAD)):
