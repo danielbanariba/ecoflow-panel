@@ -44,8 +44,9 @@ PlasmoidItem {
     function batteryIcon(v) {
         if (v < 0) return "battery-missing";
         var step = Math.max(0, Math.min(100, Math.round(v / 10) * 10));
-        return (root.state === "charging" ? "battery-charging-0" : "battery-0")
-               .replace("0", String(step));
+        // Breeze spells the steps with three digits: battery-060(-charging).
+        return "battery-" + ("00" + step).slice(-3)
+               + (root.state === "charging" ? "-charging" : "");
     }
 
     function humanTime(m) {
