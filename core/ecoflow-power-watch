@@ -124,8 +124,14 @@ def record_sample(d, ts):
             conn.execute("PRAGMA journal_mode=WAL")
             if not existed:
                 conn.execute("PRAGMA user_version = 1")
-            conn.execute(_INSERT_SQL, [row[c] for c in _SAMPLE_COLUMNS])
+            cur = conn.execute(_INSERT_SQL, [row[c] for c in _SAMPLE_COLUMNS])
             conn.commit()
+            # OR IGNORE keeps the row already at this second (a clock stepped
+            # back, two runs in one second); the dropped reading is still a
+            # failure to record, so say so.
+            if cur.rowcount == 0:
+                print(f"ecoflow-power-watch: could not record sample: "
+                      f"ts {ts} already has a row, reading dropped", file=sys.stderr)
         finally:
             conn.close()
     except Exception as e:

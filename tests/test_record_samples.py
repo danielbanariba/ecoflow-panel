@@ -238,3 +238,19 @@ def test_locked_database_does_not_delay_the_alert(mod, monkeypatch, capsys):
 
     assert len(sent) == 1 and sent[0] < 2.5
     assert "could not record sample" in capsys.readouterr().err
+
+
+def test_reading_dropped_on_an_existing_second_is_reported(mod, capsys):
+    """Catches INSERT OR IGNORE discarding a reading in silence. After the
+    clock is stepped back, a new reading can land on a second that already
+    has a row; the primary key keeps the old row, but the loss must reach
+    stderr like every other recording failure."""
+    mod.record_sample(make_payload(), 1_700_000_000)
+    assert capsys.readouterr().err == ""
+
+    mod.record_sample(make_payload({"inv.acInVol": 0, "ems.lcdShowSoc": 55}), 1_700_000_000)
+
+    err = capsys.readouterr().err
+    assert "could not record sample" in err and "1700000000" in err
+    rows = all_rows(mod.SAMPLES_DB)
+    assert [(r["ts"], r["soc"]) for r in rows] == [(1_700_000_000, 97)]
