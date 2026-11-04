@@ -117,11 +117,16 @@ def record_sample(d, ts):
         os.makedirs(os.path.dirname(SAMPLES_DB), exist_ok=True)
         conn = sqlite3.connect(SAMPLES_DB)
         try:
+            # journal_mode cannot change inside a transaction, so it goes
+            # first; the table and its schema version are then created in one
+            # transaction with the row, so a run that dies half-way leaves
+            # neither a table at version 0 nor a version without a table.
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("BEGIN IMMEDIATE")
             existed = conn.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name='samples'"
             ).fetchone() is not None
             conn.execute(_CREATE_TABLE_SQL)
-            conn.execute("PRAGMA journal_mode=WAL")
             if not existed:
                 conn.execute("PRAGMA user_version = 1")
             cur = conn.execute(_INSERT_SQL, [row[c] for c in _SAMPLE_COLUMNS])

@@ -254,3 +254,36 @@ def test_reading_dropped_on_an_existing_second_is_reported(mod, capsys):
     assert "could not record sample" in err and "1700000000" in err
     rows = all_rows(mod.SAMPLES_DB)
     assert [(r["ts"], r["soc"]) for r in rows] == [(1_700_000_000, 97)]
+
+
+def test_schema_version_survives_a_failure_right_after_create(mod, monkeypatch):
+    """Catches CREATE TABLE and PRAGMA user_version landing in separate
+    transactions. If the first run dies between the two, the table exists
+    with version 0, every later run sees an existing table and never sets
+    it, and a future migration would misread a v1 database as unversioned."""
+    import types
+
+    class DiesAfterCreate(sqlite3.Connection):
+        created = False
+
+        def execute(self, sql, *a):
+            if DiesAfterCreate.created:
+                DiesAfterCreate.created = False
+                raise sqlite3.OperationalError("simulated crash after CREATE TABLE")
+            if sql.lstrip().upper().startswith("CREATE TABLE"):
+                DiesAfterCreate.created = True
+            return super().execute(sql, *a)
+
+    faulty = types.SimpleNamespace(
+        connect=lambda path, **k: sqlite3.connect(path, factory=DiesAfterCreate, **k))
+    monkeypatch.setattr(mod, "sqlite3", faulty)
+    mod.record_sample(make_payload(), 1_700_000_000)          # first run dies
+    monkeypatch.setattr(mod, "sqlite3", sqlite3)
+    mod.record_sample(make_payload(), 1_700_000_060)          # next run is fine
+
+    conn = sqlite3.connect(mod.SAMPLES_DB)
+    try:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 1
+    finally:
+        conn.close()
+    assert [r["ts"] for r in all_rows(mod.SAMPLES_DB)] == [1_700_000_060]
