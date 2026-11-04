@@ -86,5 +86,30 @@ class PickSocNonNumeric(BatteryCase):
         self.assertIsNone(json.loads(out)["soc"])
 
 
+class CacheShape(BatteryCase):
+    """Valid JSON is not necessarily our JSON: a cache of the wrong shape must
+    be ignored and refetched, not crash the client."""
+
+    def check(self, cached):
+        with open(self.b.CACHE, "w") as fh:
+            json.dump(cached, fh)
+        api = {"code": "0", "data": {"ems.lcdShowSoc": 97}}
+        with mock.patch.object(self.b, "call", return_value=api):
+            rc, out = self.run_main()
+        self.assertEqual((rc, out.strip()), (0, "97%"))
+
+    def test_top_level_list(self):
+        self.check([1, 2, 3])
+
+    def test_no_data_key(self):
+        self.check({"at": time.time()})
+
+    def test_data_not_an_object(self):
+        self.check({"at": time.time(), "data": [97]})
+
+    def test_stamp_not_a_number(self):
+        self.check({"at": "yesterday", "data": {"ems.lcdShowSoc": 40}})
+
+
 if __name__ == "__main__":
     unittest.main()

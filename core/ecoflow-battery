@@ -143,9 +143,12 @@ def main():
     try:
         with open(CACHE) as fh:
             cached = json.load(fh)
+        # Valid JSON of another shape is no cache at all, not a crash.
+        at = cached.get("at") if isinstance(cached, dict) else None
         # A stamp in the future (clock stepped back) is not fresh: without the
         # lower bound it would be served until the clock caught up.
-        if 0 <= now - cached.get("at", 0) < MIN_INTERVAL and "--force" not in args:
+        if (isinstance(at, (int, float)) and isinstance(cached.get("data"), dict)
+                and 0 <= now - at < MIN_INTERVAL and "--force" not in args):
             data = cached["data"]
     except (OSError, ValueError):
         pass

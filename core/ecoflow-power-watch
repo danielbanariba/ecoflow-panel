@@ -178,7 +178,11 @@ def main():
 
     try:
         with open(STATE) as fh:
-            prev = json.load(fh).get("live")
+            st = json.load(fh)
+        # Valid JSON of another shape counts as no state, like a first run.
+        prev = st.get("live") if isinstance(st, dict) else None
+        if not isinstance(prev, bool):
+            prev = None
     except (OSError, ValueError):
         prev = None
 

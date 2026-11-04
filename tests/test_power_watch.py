@@ -77,5 +77,30 @@ class OutageAcrossDst(WatchCase):
         self.assertEqual(self.minutes("2026-03-08 01:50:00", start + 20 * 60), 20)
 
 
+class StateShape(WatchCase):
+    """A state file holding valid JSON of the wrong shape counts as no state:
+    the run stays silent, as a first run does, and rewrites it."""
+
+    def check(self, state):
+        with open(self.w.STATE, "w") as fh:
+            json.dump(state, fh)
+        with mock.patch.object(self.w, "reading", return_value=dict(DEAD)), \
+             mock.patch.object(self.w, "ntfy_topic", return_value="topic"), \
+             mock.patch("urllib.request.urlopen") as urlopen:
+            self.assertEqual(self.run_main(), 0)
+        urlopen.assert_not_called()
+        with open(self.w.STATE) as fh:
+            self.assertEqual(json.load(fh), {"live": False})
+
+    def test_top_level_bool(self):
+        self.check(True)
+
+    def test_top_level_list(self):
+        self.check([{"live": True}])
+
+    def test_live_not_a_bool(self):
+        self.check({"live": "yes"})
+
+
 if __name__ == "__main__":
     unittest.main()
