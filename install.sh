@@ -28,7 +28,13 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --uninstall) MODE=uninstall ;;
     --no-watch)  WATCH=0 ;;
-    --frontend)  FRONTEND="${2:-}"; shift ;;
+    --frontend)
+      # Unknown names used to fall through the frontend case and install none.
+      case "${2:-}" in
+        kde|gnome|waybar|none) FRONTEND="$2" ;;
+        *) die "--frontend takes kde | gnome | waybar | none, not '${2:-}'" ;;
+      esac
+      shift ;;
     -h|--help)   sed -n '2,14p' "$0"; exit 0 ;;
   esac
   shift
@@ -67,7 +73,8 @@ if [ "$MODE" = uninstall ]; then
   rm -f "$BIN/ecoflow-battery" "$BIN/ecoflow-power-watch" "$BIN/ecoflow-waybar"
   rm -rf "$HOME/.local/share/plasma/plasmoids/local.ecoflow"
   rm -rf "$HOME/.local/share/gnome-shell/extensions/ecoflow@banariba.local"
-  rm -f "$HOME/.cache/ecoflow-battery.json" "$HOME/.cache/ecoflow-power-watch.json"
+  rm -f "$HOME/.cache/ecoflow-battery.json" "$HOME/.cache/ecoflow-power-watch.json" \
+        "$HOME/.cache/ecoflow-power-watch.lock"
   ok "binaries, units and frontends removed"
   warn "$CONF kept — it holds your API keys. Delete it yourself if you mean to."
   exit 0
@@ -97,7 +104,9 @@ esac
 # ------------------------------------------------------------ credentials
 step "Credentials"
 mkdir -p "$CONF"
-if [ -s "$CONF/credentials" ] && grep -q '^ACCESS_KEY=.\+' "$CONF/credentials"; then
+# Match what ecoflow-battery's conf() accepts: whitespace around the key and
+# the '=' is fine there, so it must not read as 'no keys' and get overwritten.
+if [ -s "$CONF/credentials" ] && grep -q '^[[:space:]]*ACCESS_KEY[[:space:]]*=[[:space:]]*[^[:space:]]' "$CONF/credentials"; then
   ok "already present, left untouched"
 else
   fetch "core/credentials.example" "$CONF/credentials" || die "could not fetch the template"
@@ -108,7 +117,7 @@ else
 fi
 
 if [ -z "${NEEDS_KEYS:-}" ]; then
-  if grep -q '^DEVICE_SN=.\+' "$CONF/credentials"; then
+  if grep -q '^[[:space:]]*DEVICE_SN[[:space:]]*=[[:space:]]*[^[:space:]]' "$CONF/credentials"; then
     ok "device serial already stored"
   else
     if "$BIN/ecoflow-battery" --discover >/dev/null 2>&1; then
@@ -151,7 +160,8 @@ case "$FRONTEND" in
   waybar)
     fetch "waybar/ecoflow-waybar" "$BIN/ecoflow-waybar" && chmod 755 "$BIN/ecoflow-waybar"
     ok "waybar helper installed at $BIN/ecoflow-waybar"
-    echo "     snippet to paste into your config: $(dirname "$0")/waybar/config.jsonc"
+    # Piped from curl there is no checkout for a relative path to point into.
+    echo "     snippet to paste into your config: ${SRC:-$REPO_RAW}/waybar/config.jsonc"
     ;;
   none)
     warn "no supported panel found — the CLI still works"

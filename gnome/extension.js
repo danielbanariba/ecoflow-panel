@@ -80,6 +80,9 @@ class EcoFlowIndicator extends PanelMenu.Button {
         let d;
         try {
             d = JSON.parse(out.trim());
+            // soc is null when the payload had no charge field: no reading.
+            if (typeof d?.soc !== 'number')
+                throw new Error('no soc');
         } catch (_e) {
             this._label.text = '--';
             this._detail.label.text = 'Sin lectura';

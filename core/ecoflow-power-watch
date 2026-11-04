@@ -19,10 +19,13 @@ never block the alert above.
   --status    print the current reading and exit
   --log       print the outage history and the total time without mains
 """
-import json, os, sqlite3, subprocess, sys, time, urllib.request
+import fcntl, json, os, sqlite3, subprocess, sys, time, urllib.request
 from datetime import datetime
 
 STATE = os.path.expanduser("~/.cache/ecoflow-power-watch.json")
+# Held from reading the state to writing it, so a run started by hand and the
+# timer's run cannot both see the same transition and both announce it.
+LOCK = os.path.expanduser("~/.cache/ecoflow-power-watch.lock")
 # The cache can be wiped; the log is history, so it lives in share/ not cache/.
 LOG = os.path.expanduser("~/.local/share/ecoflow/outages.log")
 SAMPLES_DB = os.path.expanduser("~/.local/share/ecoflow/samples.db")
@@ -188,8 +191,13 @@ def push(title, body, topic, tags, priority):
             urllib.request.urlopen(req, timeout=10).read()
         except Exception as e:
             print(f"ntfy failed: {e}", file=sys.stderr)
-    subprocess.run(["notify-send", "-a", "EcoFlow", "-i", "battery",
-                    "-u", "critical", title, body], check=False)
+    # notify-send is optional. Missing, it must not abort the run before the
+    # state is saved, or the next tick re-announces the same transition.
+    try:
+        subprocess.run(["notify-send", "-a", "EcoFlow", "-i", "battery",
+                        "-u", "critical", title, body], check=False)
+    except OSError as e:
+        print(f"notify-send failed: {e}", file=sys.stderr)
 
 
 def log_event(kind, soc, minutes=None):
@@ -225,7 +233,9 @@ def outage_minutes(now):
         if len(parts) >= 2 and parts[1] == "corte":
             try:
                 started = datetime.strptime(parts[0], "%Y-%m-%d %H:%M:%S")
-                return max(0, int((now - started).total_seconds() // 60))
+                # Compare as epoch seconds: naive wall-clock subtraction is
+                # off by an hour when the outage spans a DST change.
+                return max(0, int((now.timestamp() - started.timestamp()) // 60))
             except ValueError:
                 return None
         if len(parts) >= 2 and parts[1] == "retorno":
@@ -282,8 +292,28 @@ def main():
         return 0
 
     try:
+        os.makedirs(os.path.dirname(LOCK), exist_ok=True)
+        lock = open(LOCK, "w")
+    except OSError:
+        lock = None                # no lock beats no alert
+    if lock is not None:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            lock.close()
+            print("otra corrida en curso, no se evalua", file=sys.stderr)
+            # Standing down skips the judgement, not this run's sample.
+            if record:
+                record_sample(d, ts)
+            return 0
+
+    try:
         with open(STATE) as fh:
-            prev = json.load(fh).get("live")
+            st = json.load(fh)
+        # Valid JSON of another shape counts as no state, like a first run.
+        prev = st.get("live") if isinstance(st, dict) else None
+        if not isinstance(prev, bool):
+            prev = None
     except (OSError, ValueError):
         prev = None
 
@@ -330,6 +360,10 @@ def main():
                 json.dump({"live": live}, fh)
         except OSError:
             pass
+    # Release before recording: the sample is not part of the judgement, and
+    # a slow database must not hold back the next run.
+    if lock is not None:
+        lock.close()
     if record:
         record_sample(d, ts)
     return 0

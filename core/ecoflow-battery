@@ -41,9 +41,15 @@ def save_sn(sn):
     try:
         with open(CONF) as fh:
             lines = fh.readlines()
+        found = any(line.startswith("DEVICE_SN=") for line in lines)
         with open(CONF, "w") as fh:
             for line in lines:
                 fh.write(f"DEVICE_SN={sn}\n" if line.startswith("DEVICE_SN=") else line)
+            # A hand-written file may have no DEVICE_SN line to replace.
+            if not found:
+                if lines and not lines[-1].endswith("\n"):
+                    fh.write("\n")
+                fh.write(f"DEVICE_SN={sn}\n")
     except OSError:
         pass
 
@@ -105,7 +111,8 @@ def pick_soc(data):
         v = data.get(key)
         if isinstance(v, (int, float)):
             return round(float(v))
-    cand = [k for k in data if k.lower().endswith("soc")]
+    cand = [k for k in data if k.lower().endswith("soc")
+            and isinstance(data[k], (int, float))]
     return round(float(data[cand[0]])) if cand else None
 
 
@@ -132,20 +139,39 @@ def main():
     # The endpoint tolerates polling but there is no reason to hammer it: the
     # figure moves slowly and a stale reading beats a rate-limit error.
     now = time.time()
-    data = None
+    data = stale = None
     try:
         with open(CACHE) as fh:
             cached = json.load(fh)
-        if now - cached.get("at", 0) < MIN_INTERVAL and "--force" not in args:
-            data = cached["data"]
+        # Valid JSON of another shape is no cache at all, not a crash.
+        at = cached.get("at") if isinstance(cached, dict) else None
+        if isinstance(at, (int, float)) and isinstance(cached.get("data"), dict):
+            # A stamp in the future (clock stepped back) is not fresh: without
+            # the lower bound it would be served until the clock caught up.
+            if 0 <= now - at < MIN_INTERVAL and "--force" not in args:
+                data = cached["data"]
+            else:
+                stale = cached["data"]
     except (OSError, ValueError):
         pass
 
     if data is None:
-        res = call("/iot-open/sign/device/quota/all", {"sn": sn})
+        # A stale reading beats a rejected one (docs/API.md), except under
+        # --force, whose caller -- the outage watcher -- needs a reading of now.
+        fallback = stale if "--force" not in args else None
+        try:
+            res = call("/iot-open/sign/device/quota/all", {"sn": sn})
+        except (OSError, ValueError):
+            if fallback is None:
+                raise
+            res = {"code": None, "message": "request failed"}
         if res.get("code") not in ("0", 0):
             print(f"api error: {res.get('message')}", file=sys.stderr)
-            return 2
+            if fallback is None:
+                return 2
+            print("using the last cached reading", file=sys.stderr)
+            data = fallback
+    if data is None:
         data = res.get("data") or {}
         try:
             os.makedirs(os.path.dirname(CACHE), exist_ok=True)
