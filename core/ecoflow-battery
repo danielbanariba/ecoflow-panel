@@ -136,7 +136,9 @@ def main():
     try:
         with open(CACHE) as fh:
             cached = json.load(fh)
-        if now - cached.get("at", 0) < MIN_INTERVAL and "--force" not in args:
+        # A stamp in the future (clock stepped back) is not fresh: without the
+        # lower bound it would be served until the clock caught up.
+        if 0 <= now - cached.get("at", 0) < MIN_INTERVAL and "--force" not in args:
             data = cached["data"]
     except (OSError, ValueError):
         pass
