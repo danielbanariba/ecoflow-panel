@@ -1,4 +1,4 @@
-import io, json, os, sys, tempfile, time, unittest
+import io, json, os, sys, tempfile, time, unittest, urllib.error
 from contextlib import redirect_stdout
 from unittest import mock
 
@@ -109,6 +109,43 @@ class CacheShape(BatteryCase):
 
     def test_stamp_not_a_number(self):
         self.check({"at": "yesterday", "data": {"ems.lcdShowSoc": 40}})
+
+
+class StaleFallback(BatteryCase):
+    """docs/API.md: the client 'treats a stale reading as better than a
+    rejected one'. An expired cache is still the answer when the API fails."""
+
+    def setUp(self):
+        super().setUp()
+        with open(self.b.CACHE, "w") as fh:
+            json.dump({"at": time.time() - 600, "data": {"ems.lcdShowSoc": 40}}, fh)
+
+    def test_rejected_request_serves_the_old_reading(self):
+        api = {"code": "1006", "message": "too many requests"}
+        with mock.patch.object(self.b, "call", return_value=api):
+            rc, out = self.run_main()
+        self.assertEqual((rc, out.strip()), (0, "40%"))
+
+    def test_network_failure_serves_the_old_reading(self):
+        err = urllib.error.URLError("Temporary failure in name resolution")
+        with mock.patch.object(self.b, "call", side_effect=err):
+            rc, out = self.run_main("--panel")
+        self.assertEqual((rc, json.loads(out)["soc"]), (0, 40))
+
+    def test_force_still_reports_the_failure(self):
+        # The outage watcher asks for --force: it needs a reading of now, and
+        # judging the grid on a ten-minute-old one would hide an outage.
+        api = {"code": "1006", "message": "too many requests"}
+        with mock.patch.object(self.b, "call", return_value=api):
+            rc, out = self.run_main("--json", "--force")
+        self.assertEqual((rc, out), (2, ""))
+
+    def test_no_cache_still_reports_the_failure(self):
+        os.remove(self.b.CACHE)
+        api = {"code": "1006", "message": "too many requests"}
+        with mock.patch.object(self.b, "call", return_value=api):
+            rc, out = self.run_main()
+        self.assertEqual((rc, out), (2, ""))
 
 
 if __name__ == "__main__":

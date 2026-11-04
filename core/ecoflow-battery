@@ -139,25 +139,39 @@ def main():
     # The endpoint tolerates polling but there is no reason to hammer it: the
     # figure moves slowly and a stale reading beats a rate-limit error.
     now = time.time()
-    data = None
+    data = stale = None
     try:
         with open(CACHE) as fh:
             cached = json.load(fh)
         # Valid JSON of another shape is no cache at all, not a crash.
         at = cached.get("at") if isinstance(cached, dict) else None
-        # A stamp in the future (clock stepped back) is not fresh: without the
-        # lower bound it would be served until the clock caught up.
-        if (isinstance(at, (int, float)) and isinstance(cached.get("data"), dict)
-                and 0 <= now - at < MIN_INTERVAL and "--force" not in args):
-            data = cached["data"]
+        if isinstance(at, (int, float)) and isinstance(cached.get("data"), dict):
+            # A stamp in the future (clock stepped back) is not fresh: without
+            # the lower bound it would be served until the clock caught up.
+            if 0 <= now - at < MIN_INTERVAL and "--force" not in args:
+                data = cached["data"]
+            else:
+                stale = cached["data"]
     except (OSError, ValueError):
         pass
 
     if data is None:
-        res = call("/iot-open/sign/device/quota/all", {"sn": sn})
+        # A stale reading beats a rejected one (docs/API.md), except under
+        # --force, whose caller -- the outage watcher -- needs a reading of now.
+        fallback = stale if "--force" not in args else None
+        try:
+            res = call("/iot-open/sign/device/quota/all", {"sn": sn})
+        except (OSError, ValueError):
+            if fallback is None:
+                raise
+            res = {"code": None, "message": "request failed"}
         if res.get("code") not in ("0", 0):
             print(f"api error: {res.get('message')}", file=sys.stderr)
-            return 2
+            if fallback is None:
+                return 2
+            print("using the last cached reading", file=sys.stderr)
+            data = fallback
+    if data is None:
         data = res.get("data") or {}
         try:
             os.makedirs(os.path.dirname(CACHE), exist_ok=True)
