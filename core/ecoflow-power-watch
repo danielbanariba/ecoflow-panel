@@ -14,10 +14,13 @@ happens to find.
   --status    print the current reading and exit
   --log       print the outage history and the total time without mains
 """
-import json, os, subprocess, sys, urllib.request
+import fcntl, json, os, subprocess, sys, urllib.request
 from datetime import datetime
 
 STATE = os.path.expanduser("~/.cache/ecoflow-power-watch.json")
+# Held from reading the state to writing it, so a run started by hand and the
+# timer's run cannot both see the same transition and both announce it.
+LOCK = os.path.expanduser("~/.cache/ecoflow-power-watch.lock")
 # The cache can be wiped; the log is history, so it lives in share/ not cache/.
 LOG = os.path.expanduser("~/.local/share/ecoflow/outages.log")
 HELPER = os.path.expanduser("~/.local/bin/ecoflow-battery")
@@ -177,6 +180,19 @@ def main():
         return 0
 
     try:
+        os.makedirs(os.path.dirname(LOCK), exist_ok=True)
+        lock = open(LOCK, "w")
+    except OSError:
+        lock = None                # no lock beats no alert
+    if lock is not None:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            lock.close()
+            print("otra corrida en curso, no se evalua", file=sys.stderr)
+            return 0
+
+    try:
         with open(STATE) as fh:
             st = json.load(fh)
         # Valid JSON of another shape counts as no state, like a first run.
@@ -229,6 +245,8 @@ def main():
                 json.dump({"live": live}, fh)
         except OSError:
             pass
+    if lock is not None:
+        lock.close()
     return 0
 
 

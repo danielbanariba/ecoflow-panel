@@ -1,8 +1,8 @@
-import json, os, sys, tempfile, time, unittest
+import fcntl, json, os, subprocess, sys, tempfile, time, unittest
 from datetime import datetime
 from unittest import mock
 
-from tests.helpers import load_script
+from tests.helpers import ROOT, load_script
 
 DEAD = {"volts": 0.0, "in_watts": 0.0, "out_watts": 300.0, "soc": 97, "dsg_min": 120}
 
@@ -14,6 +14,7 @@ class WatchCase(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.w.STATE = os.path.join(self.tmp.name, "state.json")
         self.w.LOG = os.path.join(self.tmp.name, "share", "outages.log")
+        self.w.LOCK = os.path.join(self.tmp.name, "watch.lock")
         # A PATH with nothing on it: no notify-send, no dconf.
         empty = os.path.join(self.tmp.name, "bin")
         os.mkdir(empty)
@@ -100,6 +101,68 @@ class StateShape(WatchCase):
 
     def test_live_not_a_bool(self):
         self.check({"live": "yes"})
+
+
+class OverlappingRuns(WatchCase):
+    """The timer's run and one started by hand can overlap. Both would read
+    the old state, both see the transition, and both send it."""
+
+    def test_second_run_stands_down_while_the_first_holds_the_lock(self):
+        with open(self.w.STATE, "w") as fh:
+            json.dump({"live": True}, fh)
+        with mock.patch.object(self.w, "reading", return_value=dict(DEAD)), \
+             mock.patch.object(self.w, "ntfy_topic", return_value="topic"), \
+             mock.patch("urllib.request.urlopen") as urlopen:
+            # Another run is mid-flight: it holds the lock.
+            with open(self.w.LOCK, "w") as other:
+                fcntl.flock(other, fcntl.LOCK_EX)
+                self.assertEqual(self.run_main(), 0)
+                urlopen.assert_not_called()
+                self.assertFalse(os.path.exists(self.w.LOG))
+                with open(self.w.STATE) as fh:
+                    self.assertEqual(json.load(fh), {"live": True})
+            # Once it is gone, the next run proceeds as usual.
+            self.assertEqual(self.run_main(), 0)
+            self.assertEqual(urlopen.call_count, 1)
+
+    def test_lock_is_released_between_runs(self):
+        with mock.patch.object(self.w, "reading", return_value=dict(DEAD)):
+            self.run_main()
+        with open(self.w.LOCK, "w") as fh:
+            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)   # raises if still held
+
+
+class OverlappingProcesses(unittest.TestCase):
+    """The same race with two real processes: a slow helper keeps both inside
+    the window between reading the state and writing it."""
+
+    def test_two_concurrent_runs_alert_once(self):
+        with tempfile.TemporaryDirectory() as home:
+            bin_ = os.path.join(home, ".local", "bin")
+            stubs = os.path.join(home, "stubs")
+            for d in (bin_, stubs, os.path.join(home, ".cache")):
+                os.makedirs(d)
+            sent = os.path.join(home, "sent")
+            for path, body in (
+                (os.path.join(bin_, "ecoflow-battery"),
+                 'sleep 1; echo \'{"inv.acInVol": 0, "ems.lcdShowSoc": 97}\''),
+                (os.path.join(stubs, "notify-send"), f'echo x >> "{sent}"'),
+            ):
+                with open(path, "w") as fh:
+                    fh.write("#!/bin/sh\n" + body + "\n")
+                os.chmod(path, 0o755)
+            with open(os.path.join(home, ".cache", "ecoflow-power-watch.json"), "w") as fh:
+                json.dump({"live": True}, fh)
+            env = dict(os.environ, HOME=home, PATH=stubs + ":/usr/bin:/bin")
+            cmd = [sys.executable, os.path.join(ROOT, "core", "ecoflow-power-watch")]
+            procs = [subprocess.Popen(cmd, env=env, stdout=subprocess.DEVNULL,
+                                      stderr=subprocess.DEVNULL) for _ in range(2)]
+            for p in procs:
+                self.assertEqual(p.wait(timeout=30), 0)
+            with open(sent) as fh:
+                self.assertEqual(len(fh.readlines()), 1)
+            with open(os.path.join(home, ".local", "share", "ecoflow", "outages.log")) as fh:
+                self.assertEqual(sum("\tcorte\t" in l for l in fh), 1)
 
 
 if __name__ == "__main__":

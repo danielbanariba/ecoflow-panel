@@ -73,7 +73,8 @@ if [ "$MODE" = uninstall ]; then
   rm -f "$BIN/ecoflow-battery" "$BIN/ecoflow-power-watch" "$BIN/ecoflow-waybar"
   rm -rf "$HOME/.local/share/plasma/plasmoids/local.ecoflow"
   rm -rf "$HOME/.local/share/gnome-shell/extensions/ecoflow@banariba.local"
-  rm -f "$HOME/.cache/ecoflow-battery.json" "$HOME/.cache/ecoflow-power-watch.json"
+  rm -f "$HOME/.cache/ecoflow-battery.json" "$HOME/.cache/ecoflow-power-watch.json" \
+        "$HOME/.cache/ecoflow-power-watch.lock"
   ok "binaries, units and frontends removed"
   warn "$CONF kept — it holds your API keys. Delete it yourself if you mean to."
   exit 0
