@@ -14,6 +14,10 @@ python3 - "$raw" <<'PY'
 import json, sys
 d = json.loads(sys.argv[1])
 soc = d["soc"]
+# soc is null when the payload carried no charge field: same as no reading.
+if not isinstance(soc, (int, float)):
+    print('{"text":"--","tooltip":"EcoFlow: sin lectura","class":"error"}')
+    sys.exit(0)
 estado = {"charging": "Cargando", "discharging": "Descargando"}.get(d["state"], "En reposo")
 
 tip = f"EcoFlow {soc}% · {estado}"
